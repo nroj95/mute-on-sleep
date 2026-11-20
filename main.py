@@ -1,3 +1,17 @@
+"""
+main.py — backend of the Decky plugin MuteOnSleep (fork: nroj95/mute-on-sleep, upstream genc-v/mute-on-sleep).
+
+What it does
+  The frontend (src/index.tsx) calls mute_for_sleep() the moment Steam starts suspending.
+  It then mutes the default output and sets its volume to the user's "Volume after waking"
+  level (0 % by default, as upstream). Nothing happens on wake: the first + press unmutes
+  and continues from that level, so waking the device never blasts sound.
+
+Settings: <DECKY_PLUGIN_SETTINGS_DIR>/settings.json — {"enabled": bool, "volume_after_waking": 0–100}
+Runs as root (plugin.json flag "_root"), so pactl is run as the deck user with its XDG_RUNTIME_DIR.
+
+Fork changes: "volume_after_waking" setting (get/set methods), set_volume_zero renamed mute_for_sleep.
+"""
 import asyncio
 import json
 import os
@@ -36,12 +50,22 @@ class Plugin:
         save_settings(settings)
         decky.logger.info(f"enabled: {enabled}")
 
-    async def set_volume_zero(self):
+    async def get_volume_after_waking(self):
+        return load_settings().get("volume_after_waking", 0)
+
+    async def set_volume_after_waking(self, percent):
+        settings = load_settings()
+        settings["volume_after_waking"] = max(0, min(100, int(percent)))
+        save_settings(settings)
+        decky.logger.info(f"volume after waking: {settings['volume_after_waking']}%")
+
+    async def mute_for_sleep(self):
         settings = load_settings()
         if not settings.get("enabled", True):
             return
 
-        decky.logger.info("muting audio")
+        volume = max(0, min(100, int(settings.get("volume_after_waking", 0))))
+        decky.logger.info(f"muting audio, volume after waking {volume}%")
         xdg_runtime = f"/run/user/{_deck_uid}"
 
         mute_proc = await asyncio.create_subprocess_exec(
@@ -51,7 +75,7 @@ class Plugin:
         )
         vol_proc = await asyncio.create_subprocess_exec(
             "sudo", "-u", _deck_user, "env", f"XDG_RUNTIME_DIR={xdg_runtime}",
-            "pactl", "set-sink-volume", "@DEFAULT_SINK@", "0%",
+            "pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{volume}%",
             stderr=asyncio.subprocess.PIPE,
         )
         results = await asyncio.gather(mute_proc.communicate(), vol_proc.communicate())
